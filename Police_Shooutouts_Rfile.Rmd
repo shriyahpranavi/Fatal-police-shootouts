@@ -1,0 +1,298 @@
+---
+title: "IE6600_Sec01_Group10_Hackathon"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+#Dataset Link: https://github.com/washingtonpost/data-police-shootings
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Libraries
+```{r}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(magrittr)
+library(gridExtra)
+library(reshape2)
+library(corrplot)
+library(randomForest)
+library(usmap)
+library(lessR)
+library(scales)
+library(treemap)
+library(treemapify)
+library(colorspace)
+library(randomcoloR)
+library(RColorBrewer)
+library(readr)
+```
+
+```{r}
+#Reading the data
+fatal_shooting <- read_csv("~/Documents/NEU/Sem 2/Computer Visualization/fatal-police-shootings-data.csv")
+```
+
+
+#DATA CLEANING
+```{r}
+#Checking number of NA values in each column
+fs<- fatal_shooting %>%
+  select(1:16)
+colSums(is.na(fs))
+```
+
+```{r}
+#Replacing the NA values of categorical variables
+fs$name[is.na(fs$name)] <- "Unknown"
+fs$armed[is.na(fs$armed)] <- "Unknown"
+fs$race[is.na(fs$race)] <- "Unknown"
+fs$flee[is.na(fs$flee)] <- "Unknown"
+
+```
+
+```{r}
+#Replacing NA values in gender and age
+fs<-fs[!(is.na(fs$gender)  | fs$gender=="D"),]
+fs1 <- fs %>%select(age,gender,race) %>%
+  group_by(gender,race) %>%
+  summarise(tot_mean = round(mean(age,na.rm=TRUE)))
+fs2 <- fs %>%
+  inner_join(fs1,by=c("gender","race"))
+i <- which(is.na(fs$age))
+fs$age[i] <- fs2$tot_mean[i]
+```
+
+
+```{r}
+#Grouping the armed column
+fs_armed <- fs %>%
+  select(armed) 
+`%!in%` <- Negate(`%in%`)
+ar1 <- c("unarmed","vehicle","Unknown", "undetermined")
+unarmed_repl = c("unarmed","vehicle")
+undetermined_repl = c("Unknown", "undetermined")
+fs_armed <- sapply(fs_armed,function(x) replace(x, x %!in% ar1, "Armed"))
+fs_armed <- sapply(fs_armed,function(x) replace(x, x %in% unarmed_repl, "Unarmed"))
+fs_armed <- sapply(fs_armed,function(x) replace(x, x %in% undetermined_repl, "Undetermined"))
+fs$armed_cat <- fs_armed
+```
+
+```{r}
+#Renaming the race column
+fs$race[fs$race=="A"]<-"Asian"
+fs$race[fs$race=="B"]<-"Black"
+fs$race[fs$race=="W"]<-"White"
+fs$race[fs$race=="N"]<-"Native American"
+fs$race[fs$race=="H"]<-"Hispanic"
+fs$race[fs$race=="O"]<-"Other"
+```
+
+```{r}
+#Grouping the Flee column into categories
+unique(fs$flee)
+fs$flee[fs$flee=="Car"]<-"Fleeing"
+fs$flee[fs$flee=="Foot"]<-"Fleeing"
+fs$flee[fs$flee=="Other"]<-"Fleeing"
+```
+
+
+
+```{r}
+#Converting columns to required data type
+cols <- c(4,5,7,8,9,10,12,13)
+fs[cols] <- lapply(fs[cols], factor)
+fs$date <- as.Date(fs$date, format="%Y-%m-%d")
+fs$year <- format(fs$date, "%Y")
+fs <- subset(fs, year!="2022")
+```
+
+```{r}
+#Creating a "Year vs Number of people killed" line graph
+fs_year <- fs %>%
+  group_by(year) %>%
+  summarise(killed=n()) 
+p1 <- ggplot(fs_year, aes(x=year, y=killed, group=1)) + 
+  geom_line(color="#1B9E77") +
+  geom_point(color="#D95F02") +
+  ggtitle("Fatal shootouts over the year") + 
+  labs(x = "Years", y = "No of people shot") +
+  theme(axis.text = element_text(size = 8),
+            axis.title = element_text(size = 12),
+            plot.title = element_text(size = 14))
+
+#Creating a "Months vs Number of people killed" line graph
+fs_month <- fs%>%
+  mutate(month=format(date,"%b")) %>%
+  group_by(month) %>%
+  summarise(killed=n())
+fs_month$month <- factor(fs_month$month,                                    
+                  levels = month.abb)
+p2 <- ggplot(fs_month, aes(x=month, y=killed, group=1)) + 
+  geom_line(color="#1B9E77") +
+  geom_point(color="#D95F02") +
+  ggtitle("Fatal shootouts over the month") +
+  labs(x = "Months", y = "No of people shot") +
+  theme(axis.text = element_text(size = 8),
+            axis.title = element_text(size = 12),
+            plot.title = element_text(size = 14))
+grid.arrange(p1,p2, nrow=1, ncol=2)
+
+```
+
+```{r}
+#Creating choropleth US map based on the number of shootouts
+fs_state<- fs %>%
+  group_by(state) %>%
+  summarise(killed=n())
+plot_usmap(data = fs_state, values = "killed", color = "#1B9E77", labels=T) + 
+  scale_fill_continuous(low = "white", high = "#1B9E77", 
+                        name = "Number of People killed", label = scales::comma) +
+  labs(title = "Shootouts in USA (State wise)") +
+  theme(legend.position = "right", plot.title = element_text(size=16), 
+        legend.title = element_text(size = 11), 
+        legend.text = element_text(size = 9))
+
+
+```
+
+```{r}
+#Creating a Race vs Number of people shot bar graph 
+fs_race <- fs %>%
+  group_by(race) %>%
+  summarise(killed = n()) %>%
+  arrange(desc(killed)) %>%
+  mutate(percent=paste0(round(killed/sum(killed)*100,2),"%"))
+  
+p1 <- ggplot(data=fs_race, aes(reorder(race,-killed), y=killed, fill=race)) +
+  geom_bar(stat="identity") + 
+  geom_text(aes(label=percent), vjust=-0.3, color="blue", size=4.5) +
+  scale_fill_brewer(palette = "Dark2") +
+  labs(title = "Number of people shot based on race" ,x = "Race", y = "No of people shot")+
+  theme(axis.text = element_text(size = 8),axis.title = element_text(size = 12),
+        legend.text = element_text(size = 10), legend.title = element_text(size=12),
+        plot.title = element_text(size = 18))
+p1
+```
+
+```{r}
+#Victims age group with respect to race and gender  - Boxplot
+geom_boxplot(outlier.colour="black", outlier.shape=16,
+             outlier.size=2, notch=FALSE)
+
+boxplot1 <- fs %>%       #selecting the targeted columns of gender, age and race for the problem statement
+  select(gender, age, race) 
+boxplot1
+#Victims age group with respect to race and gender- Boxplot
+output_boxplot <- ggplot(boxplot1, aes(x=race, y=age, fill = gender)) +    #visualising a boxplot using ggplot2
+  scale_fill_brewer(palette = "Dark2") +
+  geom_boxplot(notch=FALSE)  + theme(legend.position="right")+
+  ggtitle("Victims Age group with respect to Gender and Race")+
+  xlab("Race") + ylab("Age") +labs(fill = "Gender of the victim") +
+  theme(axis.text.x = element_text(face="bold", color="#000000", 
+                           size=10, angle = 45),
+          axis.text.y = element_text(face="bold", color="#000000", 
+                           size=10)) +
+  scale_x_discrete(name ="Race", limits=c("Asian", "Black", "Hispanic",  "White", "Native American", "Other", "Unknown")) 
+
+output_boxplot
+```
+
+```{r}
+#Signs of Mental illness in victims  - Pie Chart
+mental_illness <- fs %>%                       #calculating the count of victims who were mentally ill
+  select(signs_of_mental_illness) %>%
+  group_by(signs_of_mental_illness) %>%
+  summarise(count = n())
+
+my_data <- data.frame(x = c(rep(mental_illness$count[1], mental_illness$count[1]),  
+                            rep(mental_illness$count[2], mental_illness$count[2])))  
+
+PieChart(x, hole =0, values = "%", data = my_data, main = "Signs of Mental Illness in Victims", cex = 1.5, fill= c("#1B9E77", "#D95F02"))                    #Creating a piechart visualisation and displaying the percentage inside the chart
+legend("right", c("False","True"), cex = 1,
+   fill= c("#D95F02", "#1B9E77"))
+
+```
+
+```{r}
+# Using group by function to group armed and armed category, also summarizing the total count and arranging in descending order
+Tree <- fs %>% group_by(armed,armed_cat) %>% summarize(No.of.count = n()) %>% arrange(desc(No.of.count))%>% #
+  drop_na()
+# Using ggplot and treemap to visualizate an get the type of weapeans found with victims at the time of shooting 
+ggplot(Tree, aes(area = No.of.count, label=paste0(armed,"\n", No.of.count),subgroup= armed_cat,fill=armed_cat ))+
+  geom_treemap(stat = "identity") + ggtitle("Type of weapon found with victims ") + labs(fill= "Armed Category") + #installed treemap and treemapify library
+ geom_treemap_text(fontface = "italic", colour = "Black", place =
+"centre", grow = FALSE) + 
+  theme(plot.title = element_text(size = 16) ,legend.title 
+=element_text(size = 20),legend.text = element_text(size = 15)) + scale_fill_brewer(palette = "Dark2") #installed RColorBrewer and randomcoloR to get the colors in the tree
+
+```
+
+```{r}
+# Usinf the group by function to group threat level and mental illness, also using the summarise function to get count
+Test2<-fs%>%group_by(threat_level,signs_of_mental_illness)%>%summarise(Count=n())%>%arrange(desc(Count))%>%
+  drop_na()
+#Used geom_line function to plot the threat level vs mental illness
+line_p1 <- ggplot(Test2, aes(x=(threat_level), y=Count, group=signs_of_mental_illness, color=signs_of_mental_illness)) +
+            geom_line(aes(linetype=signs_of_mental_illness)) + 
+            scale_color_brewer(palette = "Dark2")+  #installed RColorBrewer and randomcoloR to get the colors in the bar plot
+            geom_point(aes(shape=signs_of_mental_illness)) + 
+            ggtitle("Threat Level vs Mental illness")+
+            ylab("No of people shot") +
+            xlab("Threat Level")
+line_p1
+
+```
+
+```{r}
+#Creating a pie chart on body cam usage
+fs_bodycam <- fs %>%
+  group_by(body_camera) %>%
+  summarise(killed = n())
+
+bp<- ggplot(fs_bodycam, aes(x="", y=killed, fill=body_camera)) +
+  geom_bar(width = 1, stat = "identity") 
+blank_theme <- theme_minimal()+
+  theme(
+  axis.title.x = element_blank(),
+  axis.title.y = element_blank(),
+  panel.border = element_blank(),
+  panel.grid=element_blank(),
+  axis.ticks = element_blank())
+pie <- bp + coord_polar("y", start=0) + scale_fill_brewer(palette="Dark2") +
+  blank_theme + theme(axis.text.x=element_blank(), 
+                      legend.text = element_text(size = 10), 
+                      legend.title = element_text(size=12), 
+                      plot.title = element_text(size = 16)) +
+  labs(fill="Body cam") + ggtitle("Usage of body cam by the cops") +
+    geom_text(aes(label = percent(killed/6997)), 
+              position = position_stack(vjust = 0.5))
+pie
+
+```
+
+```{r}
+# Groping all the elements that fall under Fleeing
+fs$flee[fs$flee=="Car"]<-"Fleeing"
+fs$flee[fs$flee=="Foot"]<-"Fleeing"
+fs$flee[fs$flee=="Other"]<-"Fleeing"
+
+# Using pipe operature grouping flee and armed category to get the total count
+t1<- fs%>%
+  group_by(flee,armed_cat)%>%   
+  summarise(Total_count=n())
+
+t1
+# Using the geom_bar function from ggplot to visualizate the fleeing victim vs victim who were armed, unarmed and underterimed
+ ggplot(data=t1, aes(x=flee, y=Total_count, fill=armed_cat)) +
+      geom_bar(stat="identity", position="dodge") +  ggtitle("Fleeing vs Armed Category") +labs(fill= "Armed Category") + ylab("No of people shot") +
+      scale_fill_brewer(palette = "Dark2")+  #installed RColorBrewer and randomcoloR to get the colors in the bar plot
+      geom_text(aes(label = round(Total_count)), vjust = -0.5, hjust = 0.5, size = 3, position = position_dodge(0.9))+
+      coord_cartesian(ylim = c(0, 5000)) 
+    
+```
+
